@@ -1,158 +1,156 @@
 #import "ReactNativeShareExtension.h"
 #import "React/RCTRootView.h"
 #import <MobileCoreServices/MobileCoreServices.h>
+#import <AVFoundation/AVFoundation.h>
 
 #define URL_IDENTIFIER @"public.url"
 #define IMAGE_IDENTIFIER @"public.image"
 #define TEXT_IDENTIFIER (NSString *)kUTTypePlainText
 
+#define VIDEO_IDENTIFIER_MPEG_4 @"public.mpeg-4"
+#define VIDEO_IDENTIFIER_QUICK_TIME_MOVIE @"com.apple.quicktime-movie"
+
+NSString *VideoIdentifier;
+
 NSExtensionContext* extensionContext;
 
 @implementation ReactNativeShareExtension {
-    NSTimer *autoTimer;
-    NSString* type;
+    NSTimer autoTimer;
+    NSString type;
     NSString* value;
 }
 
-- (UIView*) shareView {
+(UIView*) shareView {
     return nil;
 }
-
 RCT_EXPORT_MODULE();
 
-- (void)viewDidLoad {
+(void)viewDidLoad {
     [super viewDidLoad];
-
+    
     //object variable for extension doesn't work for react-native. It must be assign to gloabl
     //variable extensionContext. in this way, both exported method can touch extensionContext
     extensionContext = self.extensionContext;
-
+    
     UIView *rootView = [self shareView];
     if (rootView.backgroundColor == nil) {
         rootView.backgroundColor = [[UIColor alloc] initWithRed:1 green:1 blue:1 alpha:0.1];
     }
-
+    
     self.view = rootView;
 }
-
 
 RCT_EXPORT_METHOD(close) {
     [extensionContext completeRequestReturningItems:nil
                                   completionHandler:nil];
 }
 
-
-
-RCT_EXPORT_METHOD(openURL:(NSString *)url) {
-  UIApplication *application = [UIApplication sharedApplication];
-  NSURL *urlToOpen = [NSURL URLWithString:[url stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
-  [application openURL:urlToOpen options:@{} completionHandler: nil];
-}
-
-
-
 RCT_REMAP_METHOD(data,
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject)
 {
-    [self extractDataFromContext: extensionContext withCallback:^(NSArray* items, NSException* err) {
+    [self extractDataFromContext: extensionContext withCallback:^(NSString* val, NSString* contentType, NSString* thumbnailBase64, NSException* err) {
         if(err) {
             reject(@"error", err.description, nil);
         } else {
-            resolve(items);
+            resolve(@{
+                @"type": contentType,
+                @"value": val,
+                @"thumbnailBase64": thumbnailBase64
+            });
         }
     }];
 }
 
-- (void)extractDataFromContext:(NSExtensionContext *)context withCallback:(void(^)(NSArray *items, NSException *exception))callback {
-    @try {
-        __block NSMutableArray *itemArray = [NSMutableArray new];
+(void)extractDataFromContext:(NSExtensionContext )context withCallback:(void(^)(NSString value, NSString contentType, NSString thumbnailBase64, NSException *exception))callback {
+    @Try {
         NSExtensionItem *item = [context.inputItems firstObject];
-
         NSArray *attachments = item.attachments;
-
+        
         __block NSItemProvider *urlProvider = nil;
         __block NSItemProvider *imageProvider = nil;
         __block NSItemProvider *textProvider = nil;
-        __block NSUInteger index = 0;
-
+        
+        __block NSItemProvider *videoProvider = nil;
+        
         [attachments enumerateObjectsUsingBlock:^(NSItemProvider *provider, NSUInteger idx, BOOL *stop) {
-            if ([provider hasItemConformingToTypeIdentifier:IMAGE_IDENTIFIER]){
-                imageProvider = provider;
-                [imageProvider loadItemForTypeIdentifier:IMAGE_IDENTIFIER options:nil completionHandler:^(id<NSSecureCoding> item, NSError *error) {
-                    /**
-                        * Save the image to NSTemporaryDirectory(), which cleans itself tri-daily.
-                        * This is necessary as the iOS 11 screenshot editor gives us a UIImage, while
-                        * sharing from Photos and similar apps gives us a URL
-                        * Therefore the solution is to save a UIImage, either way, and return the local path to that temp UIImage
-                        * This path will be sent to React Native and can be processed and accessed RN side.
-                        **/
-
-                    UIImage *sharedImage;
-                    NSString *filename;
-
-                    if ([(NSObject *)item isKindOfClass:[UIImage class]]){
-                        sharedImage = (UIImage *)item;
-                        NSString *name = @"RNSE_TEMP_IMG_";
-                        NSString *nbFiles = [NSString stringWithFormat:@"%@",  @(index)];
-                        NSString *fullname = [name stringByAppendingString:(nbFiles)];
-                        filename = [fullname stringByAppendingPathExtension:@"png"];
-                    }else if ([(NSObject *)item isKindOfClass:[NSURL class]]){
-                        NSURL* url = (NSURL *)item;
-                        filename = [[url lastPathComponent] lowercaseString];
-                        NSData *data = [NSData dataWithContentsOfURL:url];
-                        sharedImage = [UIImage imageWithData:data];
-                    }
-                    NSString *filePath = [NSTemporaryDirectory() stringByAppendingPathComponent:filename];
-
-                    [UIImageJPEGRepresentation(sharedImage, 1.0) writeToFile:filePath atomically:YES];
-                    index += 1;
-
-                    [itemArray addObject: @{
-                                            @"type": [filePath pathExtension],
-                                            @"value": filePath
-                                            }];
-                    if (callback && (index == [attachments count])) {
-                        callback(itemArray, nil);
-                    }
-
-                }];
-            } else if([provider hasItemConformingToTypeIdentifier:URL_IDENTIFIER]) {
+            if([provider hasItemConformingToTypeIdentifier:URL_IDENTIFIER]) {
                 urlProvider = provider;
-                index += 1;
-                [urlProvider loadItemForTypeIdentifier:URL_IDENTIFIER options:nil completionHandler:^(id<NSSecureCoding> item, NSError *error) {
-                    NSURL *url = (NSURL *)item;
-                    [itemArray addObject: @{
-                                            @"type": @"text/plain",
-                                            @"value": [url absoluteString]
-                                            }];
-                    if (callback && (index == [attachments count])) {
-                        callback(itemArray, nil);
-                    }
-                }];
+                *stop = YES;
             } else if ([provider hasItemConformingToTypeIdentifier:TEXT_IDENTIFIER]){
                 textProvider = provider;
+                *stop = YES;
             } else if ([provider hasItemConformingToTypeIdentifier:IMAGE_IDENTIFIER]){
                 imageProvider = provider;
-                [textProvider loadItemForTypeIdentifier:TEXT_IDENTIFIER options:nil completionHandler:^(id<NSSecureCoding> item, NSError *error) {
-                    NSString *text = (NSString *)item;
-                    index += 1;
-                    [itemArray addObject: @{
-                                            @"type": @"text/plain",
-                                            @"value": text
-                                            }];
-                    if (callback && (index == [attachments count])) {
-                        callback(itemArray, nil);
-                    }
-                }];
-            } else {
-                index += 1;
+                *stop = YES;
+            } else if ([provider hasItemConformingToTypeIdentifier:VIDEO_IDENTIFIER_MPEG_4]) {
+                videoProvider = provider;
+                VideoIdentifier = VIDEO_IDENTIFIER_MPEG_4;
+                *stop = YES;
+            } else if([provider hasItemConformingToTypeIdentifier:VIDEO_IDENTIFIER_QUICK_TIME_MOVIE]) {
+                videoProvider = provider;
+                VideoIdentifier = VIDEO_IDENTIFIER_QUICK_TIME_MOVIE;
+                *stop = YES;
             }
         }];
+        
+        if(urlProvider) {
+            [urlProvider loadItemForTypeIdentifier:URL_IDENTIFIER options:nil completionHandler:^(id<NSSecureCoding> item, NSError *error) {
+                NSURL *url = (NSURL *)item;
+                
+                if(callback) {
+                    callback([url absoluteString], @"text/plain",nil, nil);
+                }
+            }];
+        } else if (imageProvider) {
+            [imageProvider loadItemForTypeIdentifier:IMAGE_IDENTIFIER options:nil completionHandler:^(id<NSSecureCoding> item, NSError *error) {
+                NSURL *url = (NSURL *)item;
+                
+                if(callback) {
+                    callback([url absoluteString], [[[url absoluteString] pathExtension] lowercaseString], @"", nil);
+                }
+            }];
+        } else if (textProvider) {
+            [textProvider loadItemForTypeIdentifier:TEXT_IDENTIFIER options:nil completionHandler:^(id<NSSecureCoding> item, NSError *error) {
+                NSString *text = (NSString *)item;
+                
+                if(callback) {
+                    callback(text, @"text/plain", nil, nil);
+                }
+            }];
+        }
+        else if(videoProvider) {
+            [videoProvider loadItemForTypeIdentifier:VideoIdentifier options:nil completionHandler:^(NSURL *path,NSError *error){
+                if (path)
+                {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        NSLog(@"Path");
+                        if(callback) {
+                            
+                            AVAsset *asset = [AVAsset assetWithURL:path];
+                            AVAssetImageGenerator *imageGenerator = [[AVAssetImageGenerator alloc]initWithAsset:asset];
+                            CMTime time = CMTimeMake(1, 1);
+                            CGImageRef imageRef = [imageGenerator copyCGImageAtTime:time actualTime:NULL error:NULL];
+                            UIImage *thumbnail = [UIImage imageWithCGImage:imageRef];
+                            CGImageRelease(imageRef);
+                            
+                            NSString *base64Image = [UIImagePNGRepresentation(thumbnail) base64EncodedStringWithOptions:NSDataBase64Encoding64CharacterLineLength];
+                            
+                            callback([path absoluteString], [[[path absoluteString] pathExtension] lowercaseString],base64Image, nil);
+                        }
+                    });
+                }
+            }];
+        }
+        else {
+            if(callback) {
+                callback(nil, nil, nil, [NSException exceptionWithName:@"Error" reason:@"couldn't find provider" userInfo:nil]);
+            }
+        }
     }
     @catch (NSException *exception) {
         if(callback) {
-            callback(nil, exception);
+            callback(nil, nil, nil, exception);
         }
     }
 }
